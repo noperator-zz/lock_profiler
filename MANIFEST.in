@@ -6,9 +6,9 @@ include *.toml
 include run_tests.sh
 recursive-include requirements *.txt
 recursive-include tests *.py
-recursive-include line_profiler *.txt
-recursive-include line_profiler *.pyx
-recursive-include line_profiler *.pxd
-recursive-include line_profiler *.pyd
-recursive-include line_profiler *.c
-recursive-include line_profiler *.h
+recursive-include lock_profiler *.txt
+recursive-include lock_profiler *.pyx
+recursive-include lock_profiler *.pxd
+recursive-include lock_profiler *.pyd
+recursive-include lock_profiler *.c
+recursive-include lock_profiler *.h

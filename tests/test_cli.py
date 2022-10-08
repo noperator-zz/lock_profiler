@@ -4,10 +4,10 @@ from sys import executable
 
 def test_cli():
     """
-    Test command line interaction with kernprof and line_profiler.
+    Test command line interaction with kernprof and lock_profiler.
 
     References:
-        https://github.com/pyutils/line_profiler/issues/9
+        https://github.com/pyutils/lock_profiler/issues/9
 
     CommandLine:
         xdoctest -m ./tests/test_cli.py test_cli
@@ -41,7 +41,7 @@ def test_cli():
     tmp_lprof_fpath = join(tmp_dpath, 'foo.py.lprof')
     tmp_lprof_fpath
 
-    info = ub.cmd(f'{executable} -m line_profiler {tmp_lprof_fpath}',
+    info = ub.cmd(f'{executable} -m lock_profiler {tmp_lprof_fpath}',
                   cwd=tmp_dpath, verbose=3)
     assert info['ret'] == 0
     # Check for some patterns that should be in the output
@@ -51,14 +51,14 @@ def test_cli():
 
 def test_version_agreement():
     """
-    Ensure that line_profiler and kernprof have the same version info
+    Ensure that lock_profiler and kernprof have the same version info
     """
     import ubelt as ub
-    info1 = ub.cmd(f'{executable} -m line_profiler --version')
+    info1 = ub.cmd(f'{executable} -m lock_profiler --version')
     info2 = ub.cmd(f'{executable} -m kernprof --version')
 
     # Strip local version suffixes
     version1 = info1['out'].strip().split('+')[0]
     version2 = info2['out'].strip().split('+')[0]
 
-    assert version2 == version1, 'kernprof and line_profiler must be in sync'
+    assert version2 == version1, 'kernprof and lock_profiler must be in sync'

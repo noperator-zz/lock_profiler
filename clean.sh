@@ -2,12 +2,12 @@
 echo "start clean"
 
 rm -rf _skbuild
-rm -rf _line_profiler.c
+rm -rf _lock_profiler.c
 rm -rf *.so
-rm -rf line_profiler/_line_profiler.c
-rm -rf line_profiler/*.so
+rm -rf lock_profiler/_lock_profiler.c
+rm -rf lock_profiler/*.so
 rm -rf build
-rm -rf line_profiler.egg-info
+rm -rf lock_profiler.egg-info
 rm -rf dist
 rm -rf mb_work
 rm -rf wheelhouse

@@ -8,13 +8,13 @@ from Cython.Build import cythonize
 def run_cythonize(force=False):
     return cythonize(
             Extension(
-                name="line_profiler._line_profiler",
-                sources=[f"line_profiler/_line_profiler.pyx", "line_profiler/timers.c", "line_profiler/unset_trace.c"],
+                name="lock_profiler._lock_profiler",
+                sources=[f"lock_profiler/_lock_profiler.pyx", "lock_profiler/timers.c", "lock_profiler/unset_trace.c"],
                 language="c++",
                 define_macros=[("CYTHON_TRACE", (1 if os.getenv("DEV") == "true" else 0))],
             ),
             compiler_directives={"language_level": 3, "infer_types": True, "linetrace": (True if os.getenv("DEV") == "true" else False)},
-            include_path=["line_profiler/python25.pxd"],
+            include_path=["lock_profiler/python25.pxd"],
             force=force,
             nthreads=multiprocessing.cpu_count(),
         )

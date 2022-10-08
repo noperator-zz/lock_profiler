@@ -9,21 +9,15 @@ import sys
 from argparse import ArgumentError, ArgumentParser
 
 try:
-    from ._line_profiler import LineProfiler as CLineProfiler
+    from ._lock_profiler import LockProfiler as CLockProfiler
 except ImportError as ex:
     raise ImportError(
-        'The line_profiler._line_profiler c-extension is not importable. '
+        'The lock_profiler._lock_profiler c-extension is not importable. '
         f'Has it been compiled? Underlying error is ex={ex!r}'
     )
 
 __version__ = '4.0.0'
 
-
-def load_ipython_extension(ip):
-    """ API for IPython to recognize this module as an IPython extension.
-    """
-    from .ipython_extension import LineProfilerMagics
-    ip.register_magics(LineProfilerMagics)
 
 
 def is_coroutine(f):
@@ -40,7 +34,7 @@ def is_generator(f):
     return isgen
 
 
-class LineProfiler(CLineProfiler):
+class LockProfiler(CLockProfiler):
     """ A profiler that records the execution times of individual lines.
     """
 

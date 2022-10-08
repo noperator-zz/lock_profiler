@@ -12,12 +12,12 @@ from comp import run_cythonize
 
 def _choose_build_method():
     DISABLE_C_EXTENSIONS = os.environ.get("DISABLE_C_EXTENSIONS", "").lower()
-    LINE_PROFILER_BUILD_METHOD = os.environ.get("LINE_PROFILER_BUILD_METHOD", "auto").lower()
+    LOCK_PROFILER_BUILD_METHOD = os.environ.get("LOCK_PROFILER_BUILD_METHOD", "auto").lower()
 
     if DISABLE_C_EXTENSIONS in {"true", "on", "yes", "1"}:
-        LINE_PROFILER_BUILD_METHOD = 'setuptools'
+        LOCK_PROFILER_BUILD_METHOD = 'setuptools'
 
-    if LINE_PROFILER_BUILD_METHOD == 'auto':
+    if LOCK_PROFILER_BUILD_METHOD == 'auto':
         try:
             import Cython  # NOQA
         except ImportError:
@@ -26,13 +26,13 @@ def _choose_build_method():
                 import cmake  # NOQA
                 import ninja  # NOQA
             except ImportError:
-                LINE_PROFILER_BUILD_METHOD = 'setuptools'
+                LOCK_PROFILER_BUILD_METHOD = 'setuptools'
             else:
-                LINE_PROFILER_BUILD_METHOD = 'scikit-build'
+                LOCK_PROFILER_BUILD_METHOD = 'scikit-build'
         else:
-            LINE_PROFILER_BUILD_METHOD = 'cython'
+            LOCK_PROFILER_BUILD_METHOD = 'cython'
 
-    return LINE_PROFILER_BUILD_METHOD
+    return LOCK_PROFILER_BUILD_METHOD
 
 
 def parse_version(fpath):
@@ -190,29 +190,29 @@ def parse_requirements(fname="requirements.txt", versions=False):
 
 
 long_description = """\
-line_profiler will profile the time individual lines of code take to execute.
+lock_profiler will profile the time individual lines of code take to execute.
 The profiler is implemented in C via Cython in order to reduce the overhead of
 profiling.
 
 Also included is the script kernprof.py which can be used to conveniently
-profile Python applications and scripts either with line_profiler or with the
+profile Python applications and scripts either with lock_profiler or with the
 function-level profiling tools in the Python standard library.
 """
 
-VERSION = parse_version('line_profiler/line_profiler.py')
-NAME = 'line_profiler'
+VERSION = parse_version('lock_profiler/lock_profiler.py')
+NAME = 'lock_profiler'
 
 
 if __name__ == '__main__':
     setupkw = {}
 
-    LINE_PROFILER_BUILD_METHOD = _choose_build_method()
-    if LINE_PROFILER_BUILD_METHOD == 'setuptools':
+    LOCK_PROFILER_BUILD_METHOD = _choose_build_method()
+    if LOCK_PROFILER_BUILD_METHOD == 'setuptools':
         setup = setuptools.setup
-    elif LINE_PROFILER_BUILD_METHOD == 'scikit-build':
+    elif LOCK_PROFILER_BUILD_METHOD == 'scikit-build':
         import skbuild  # NOQA
         setup = skbuild.setup
-    elif LINE_PROFILER_BUILD_METHOD == 'cython':
+    elif LOCK_PROFILER_BUILD_METHOD == 'cython':
         # no need to try importing cython because an import
         # was already attempted in _choose_build_method
         setupkw.update(dict(ext_modules=run_cythonize()))
@@ -241,16 +241,16 @@ if __name__ == '__main__':
     setupkw["version"] = VERSION
     setupkw["author"] = "Robert Kern"
     setupkw["author_email"] = "robert.kern@enthought.com"
-    setupkw['url'] = 'https://github.com/pyutils/line_profiler'
+    setupkw['url'] = 'https://github.com/pyutils/lock_profiler'
     setupkw["description"] = "Line-by-line profiler"
     setupkw["long_description"] = long_description
     setupkw["long_description_content_type"] = "text/x-rst"
     setupkw["license"] = "BSD"
     setupkw["packages"] = list(setuptools.find_packages())
-    setupkw["py_modules"] = ['kernprof', 'line_profiler']
+    setupkw["py_modules"] = ['kernprof', 'lock_profiler']
     setupkw["python_requires"] = ">=3.6"
     setupkw['license_files'] = ['LICENSE.txt', 'LICENSE_Python.txt']
-    setupkw['keywords'] = ['timing', 'timer', 'profiling', 'profiler', 'line_profiler']
+    setupkw['keywords'] = ['timing', 'timer', 'profiling', 'profiler', 'lock_profiler']
     setupkw["classifiers"] = [
         'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',
@@ -267,3 +267,11 @@ if __name__ == '__main__':
         'Topic :: Software Development',
     ]
     setup(**setupkw)
+
+    paths = [
+        "C:/Python37_64",
+        # "C:/development/python/cpython"
+    ]
+
+    for path in paths:
+        os.system(f"cp build/lib.win-amd64-3.7/lock_profiler/* {path}/Lib/site-packages/lock_profiler")

@@ -14,13 +14,13 @@
 build/
 dist/
 _skbuild
-_line_profiler.c
-line_profiler.egg-info/
+_lock_profiler.c
+lock_profiler.egg-info/
 MANIFEST
 pypi-site-docs.zip
 index.html
 CMake*
-!line_profiler/CMakeLists.txt
+!lock_profiler/CMakeLists.txt
 Makefile
 
 .coverage

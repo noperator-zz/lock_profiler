@@ -1,5 +1,5 @@
 import pytest
-from line_profiler import LineProfiler
+from lock_profiler import LockProfiler
 
 
 def f(x):
@@ -14,13 +14,13 @@ def g(x):
 
 
 def test_init():
-    lp = LineProfiler()
+    lp = LockProfiler()
     assert lp.functions == []
     assert lp.code_map == {}
-    lp = LineProfiler(f)
+    lp = LockProfiler(f)
     assert lp.functions == [f]
     assert lp.code_map == {f.__code__: {}}
-    lp = LineProfiler(f, g)
+    lp = LockProfiler(f, g)
     assert lp.functions == [f, g]
     assert lp.code_map ==  {
         f.__code__: {},
@@ -29,7 +29,7 @@ def test_init():
 
 
 def test_enable_disable():
-    lp = LineProfiler()
+    lp = LockProfiler()
     assert lp.enable_count == 0
     lp.enable_by_count()
     assert lp.enable_count == 1
@@ -61,7 +61,7 @@ def test_enable_disable():
 
 
 def test_function_decorator():
-    profile = LineProfiler()
+    profile = LockProfiler()
     f_wrapped = profile(f)
     assert f_wrapped.__name__ == 'f'
 
@@ -72,7 +72,7 @@ def test_function_decorator():
 
 
 def test_gen_decorator():
-    profile = LineProfiler()
+    profile = LockProfiler()
     g_wrapped = profile(g)
     assert g_wrapped.__name__ == 'g'
 

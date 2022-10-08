@@ -153,15 +153,15 @@ class LineStats(object):
         self.unit = unit
 
 
-cdef class LineProfiler:
+cdef class LockProfiler:
     """ 
     Time the execution of lines of Python code.
 
     Example:
         >>> import copy
-        >>> import line_profiler
-        >>> # Create a LineProfiler instance
-        >>> self = line_profiler.LineProfiler()
+        >>> import lock_profiler
+        >>> # Create a LockProfiler instance
+        >>> self = lock_profiler.LockProfiler()
         >>> # Wrap a function
         >>> copy_fn = self(copy.copy)
         >>> # Call the function
@@ -278,7 +278,7 @@ cdef class LineProfiler:
     @property
     def code_map(self):
         """
-        line_profiler 4.0 no longer directly maintains code_map, but this will
+        lock_profiler 4.0 no longer directly maintains code_map, but this will
         construct something similar for backwards compatibility.
         """
         c_code_map = self.c_code_map
@@ -299,7 +299,7 @@ cdef class LineProfiler:
     @property
     def last_time(self):
         """
-        line_profiler 4.0 no longer directly maintains last_time, but this will
+        lock_profiler 4.0 no longer directly maintains last_time, but this will
         construct something similar for backwards compatibility.
         """
         c_last_time = (<dict>self._c_last_time)[threading.get_ident()]
@@ -351,7 +351,7 @@ cdef int python_trace_callback(object self_, PyFrameObject *py_frame, int what,
 PyObject *arg):
     """ The PyEval_SetTrace() callback.
     """
-    cdef LineProfiler self
+    cdef LockProfiler self
     cdef object code
     cdef LineTime entry
     cdef LastTime old
@@ -361,7 +361,7 @@ PyObject *arg):
     cdef int64 block_hash
     cdef unordered_map[int64, LineTime] line_entries
 
-    self = <LineProfiler>self_
+    self = <LockProfiler>self_
 
     if what == PyTrace_LINE or what == PyTrace_RETURN:
         block_hash = hash(get_frame_code(py_frame))

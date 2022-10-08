@@ -39,15 +39,15 @@ ignore_missing_imports = true
 
 [tool.xcookie]
 tags = [ "pyutils", "binpy", "github",]
-mod_name = "line_profiler"
-repo_name = "line_profiler"
+mod_name = "lock_profiler"
+repo_name = "lock_profiler"
 rel_mod_parent_dpath = "."
 os = [ "all", "linux", "osx", "win",]
 min_python = 3.6
 author = "Robert Kern"
 author_email = "robert.kern@enthought.com"
 description = "Line-by-line profiler"
-url = "https://github.com/pyutils/line_profiler"
+url = "https://github.com/pyutils/lock_profiler"
 license = "BSD"
 dev_status = "stable"
 

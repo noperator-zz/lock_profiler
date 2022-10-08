@@ -1,2 +1,2 @@
 def test_import():
-    import line_profiler
+    import lock_profiler
