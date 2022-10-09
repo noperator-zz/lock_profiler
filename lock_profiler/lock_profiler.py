@@ -7,6 +7,7 @@ import tempfile
 import os
 import sys
 from argparse import ArgumentError, ArgumentParser
+import typing
 
 try:
     from ._lock_profiler import LockProfiler as CLockProfiler
@@ -37,6 +38,14 @@ def is_generator(f):
 class LockProfiler(CLockProfiler):
     """ A profiler that records the execution times of individual lines.
     """
+
+    _inst: typing.Optional['LockProfiler'] = None
+
+    @staticmethod
+    def inst():
+        if not LockProfiler._inst:
+            LockProfiler._inst = LockProfiler()
+        return LockProfiler._inst
 
     def __call__(self, func):
         """ Decorate a function to start the profiler on function entry and stop
@@ -120,62 +129,6 @@ class LockProfiler(CLockProfiler):
         """
         lstats = self.get_stats()
         show_text(lstats.timings, lstats.unit, output_unit=output_unit, stream=stream, stripzeros=stripzeros)
-
-    def run(self, cmd):
-        """ Profile a single executable statment in the main namespace.
-        """
-        import __main__
-        main_dict = __main__.__dict__
-        return self.runctx(cmd, main_dict, main_dict)
-
-    def runctx(self, cmd, globals, locals):
-        """ Profile a single executable statement in the given namespaces.
-        """
-        self.enable_by_count()
-        try:
-            exec(cmd, globals, locals)
-        finally:
-            self.disable_by_count()
-        return self
-
-    def runcall(self, func, *args, **kw):
-        """ Profile a single function call.
-        """
-        self.enable_by_count()
-        try:
-            return func(*args, **kw)
-        finally:
-            self.disable_by_count()
-
-    def add_module(self, mod):
-        """ Add all the functions in a module and its classes.
-        """
-        from inspect import isclass, isfunction
-
-        nfuncsadded = 0
-        for item in mod.__dict__.values():
-            if isclass(item):
-                for k, v in item.__dict__.items():
-                    if isfunction(v):
-                        self.add_function(v)
-                        nfuncsadded += 1
-            elif isfunction(item):
-                self.add_function(item)
-                nfuncsadded += 1
-
-        return nfuncsadded
-
-
-# This could be in the ipython_extension submodule,
-# but it doesn't depend on the IPython module so it's easier to just let it stay here.
-def is_ipython_kernel_cell(filename):
-    """ Return True if a filename corresponds to a Jupyter Notebook cell
-    """
-    return (
-        filename.startswith('<ipython-input-') or
-        filename.startswith(os.path.join(tempfile.gettempdir(), 'ipykernel_')) or
-        filename.startswith(os.path.join(tempfile.gettempdir(), 'xpython_'))
-    )
 
 
 def show_func(filename, start_lineno, func_name, timings, unit,

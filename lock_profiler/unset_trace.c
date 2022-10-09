@@ -3,5 +3,6 @@
 #include "Python.h"
 
 void unset_trace() {
-    PyEval_SetTrace(NULL, NULL);
+    PyEval_SetProfile(NULL, NULL);
+//    PyEval_SetTrace(NULL, NULL);
 }
