@@ -247,6 +247,7 @@ if __name__ == '__main__':
     setupkw["long_description_content_type"] = "text/x-rst"
     setupkw["license"] = "BSD"
     setupkw["packages"] = list(setuptools.find_packages())
+    # setupkw["include_package_data"] = True
     setupkw["py_modules"] = ['kernprof', 'lock_profiler']
     setupkw["python_requires"] = ">=3.6"
     setupkw['license_files'] = ['LICENSE.txt', 'LICENSE_Python.txt']
@@ -267,11 +268,11 @@ if __name__ == '__main__':
         'Topic :: Software Development',
     ]
     setup(**setupkw)
-
-    paths = [
-        "C:/Python37_64",
-        # "C:/development/python/cpython"
-    ]
-
-    for path in paths:
-        os.system(f"cp build/lib.win-amd64-3.7/lock_profiler/* {path}/Lib/site-packages/lock_profiler")
+# paths = [
+#     "C:/Python37",
+#     # "C:/development/python/cpython"
+# ]
+#
+# for path in paths:
+#     os.system(f"cp
+#  build/lib.win-amd64-3.7/lock_profiler/* {path}/Lib/site-packages/lock_profiler")

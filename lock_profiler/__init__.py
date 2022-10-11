@@ -13,10 +13,6 @@ mkinit ./lock_profiler/__init__.py --relative -w
 
 from .lock_profiler import __version__
 
-from .lock_profiler import (LockProfiler,
-                            load_stats, main,
-                            show_func, show_text,)
+from .lock_profiler import (LockProfiler)
 
-__all__ = ['LockProfiler', 'lock_profiler',
-           'load_stats', 'main', 'show_func',
-           'show_text', '__version__']
+__all__ = ['LockProfiler', 'lock_profiler', '__version__']

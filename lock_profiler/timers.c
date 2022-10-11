@@ -13,21 +13,23 @@
 #include <windows.h>
 
 PY_LONG_LONG
+hpTimerUnit(void)
+{
+        static PY_LONG_LONG unit = 0;
+        if (unit == 0) {
+            LARGE_INTEGER li;
+            unit = 1000000000 /
+             (QueryPerformanceFrequency(&li) ? li.QuadPart :  1000000);
+        }
+        return unit;
+}
+
+PY_LONG_LONG
 hpTimer(void)
 {
         LARGE_INTEGER li;
         QueryPerformanceCounter(&li);
-        return li.QuadPart;
-}
-
-double
-hpTimerUnit(void)
-{
-        LARGE_INTEGER li;
-        if (QueryPerformanceFrequency(&li))
-                return 1.0 / li.QuadPart;
-        else
-                return 0.000001;  /* unlikely */
+        return li.QuadPart * hpTimerUnit();
 }
 
 #elif (defined(PYOS_OS2) && defined(PYCC_GCC))

@@ -3,6 +3,7 @@ include *.rst
 include *.py
 include *.txt
 include *.toml
+include *.css
 include run_tests.sh
 recursive-include requirements *.txt
 recursive-include tests *.py
@@ -12,3 +13,4 @@ recursive-include lock_profiler *.pxd
 recursive-include lock_profiler *.pyd
 recursive-include lock_profiler *.c
 recursive-include lock_profiler *.h
+recursive-include lock_profiler *.css
