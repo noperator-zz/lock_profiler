@@ -247,7 +247,7 @@ if __name__ == '__main__':
     setupkw["long_description_content_type"] = "text/x-rst"
     setupkw["license"] = "BSD"
     setupkw["packages"] = list(setuptools.find_packages())
-    # setupkw["include_package_data"] = True
+    setupkw["include_package_data"] = True
     setupkw["py_modules"] = ['kernprof', 'lock_profiler']
     setupkw["python_requires"] = ">=3.6"
     setupkw['license_files'] = ['LICENSE.txt', 'LICENSE_Python.txt']

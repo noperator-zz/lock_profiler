@@ -106,8 +106,7 @@ cdef struct CLockTime:
     # How long acquire took
     PY_LONG_LONG duration
 
-@dataclass
-class LockTime:
+class LockTime(typing.NamedTuple):
     timestamp: float
     tid: int
     lock_hash: int
@@ -154,9 +153,8 @@ _stack_map = {}
 _lock_strs = {}
 
 cdef class LockProfiler:
-
     def __init__(self):
-        pass
+        raise NotImplementedError()
 
     @staticmethod
     def enable(obj):
@@ -187,7 +185,8 @@ cdef class LockProfiler:
             -1,
         ))
 
-    def get_stats(self) -> LockStats:
+    @staticmethod
+    def get_stats() -> LockStats:
         """ Return a LineStats object containing the timings.
         """
         cdef dict cmap
@@ -205,7 +204,13 @@ cdef class LockProfiler:
             #  for k, v in _stack_map.items()},
             # _c_stack_map,
             _stack_map,
-            [LockTime(*a.values()) for a in _c_lock_list],
+            [LockTime(
+                a.timestamp,
+                a.tid,
+                a.lock_hash,
+                a.stack_hash,
+                a.duration,
+            ) for a in _c_lock_list],
             # tuple(CLockTime(t[0] - offset, *t[1:]) for t in _c_lock_list),
         )
         return output

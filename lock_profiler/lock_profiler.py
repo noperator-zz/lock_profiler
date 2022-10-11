@@ -11,6 +11,7 @@ import typing
 from dataclasses import dataclass
 import json
 from collections import defaultdict
+import pathlib
 
 try:
     from ._lock_profiler import LockProfiler as CLockProfiler
@@ -24,107 +25,22 @@ except ImportError as ex:
 __version__ = '4.0.0'
 
 
-
-def is_coroutine(f):
-    return inspect.iscoroutinefunction(f)
-
-
-CO_GENERATOR = 0x0020
-
-
-def is_generator(f):
-    """ Return True if a function is a generator.
-    """
-    isgen = (f.__code__.co_flags & CO_GENERATOR) != 0
-    return isgen
-
-
 class LockProfiler(CLockProfiler):
-    """ A profiler that records the execution times of individual lines.
-    """
+    @staticmethod
+    def dump_stats(filename):
+        stats = LockProfiler.get_stats()
 
-    _inst: typing.Optional['LockProfiler'] = None
+        with open(filename, "w") as f:
+            f.write(json.dumps(stats.__dict__))
 
     @staticmethod
-    def inst() -> 'LockProfiler':
-        if not LockProfiler._inst:
-            LockProfiler._inst = LockProfiler()
-        return LockProfiler._inst
-
-    def __call__(self, func):
-        """ Decorate a function to start the profiler on function entry and stop
-        it on function exit.
-        """
-        self.add_function(func)
-        if is_coroutine(func):
-            wrapper = self.wrap_coroutine(func)
-        elif is_generator(func):
-            wrapper = self.wrap_generator(func)
-        else:
-            wrapper = self.wrap_function(func)
-        return wrapper
-
-    def wrap_coroutine(self, func):
-        """
-        Wrap a Python 3.5 coroutine to profile it.
-        """
-
-        @functools.wraps(func)
-        async def wrapper(*args, **kwds):
-            self.enable_by_count()
-            try:
-                result = await func(*args, **kwds)
-            finally:
-                self.disable_by_count()
-            return result
-
-        return wrapper
-
-    def wrap_generator(self, func):
-        """ Wrap a generator to profile it.
-        """
-        @functools.wraps(func)
-        def wrapper(*args, **kwds):
-            g = func(*args, **kwds)
-            # The first iterate will not be a .send()
-            self.enable_by_count()
-            try:
-                item = next(g)
-            except StopIteration:
-                return
-            finally:
-                self.disable_by_count()
-            input_ = (yield item)
-            # But any following one might be.
-            while True:
-                self.enable_by_count()
-                try:
-                    item = g.send(input_)
-                except StopIteration:
-                    return
-                finally:
-                    self.disable_by_count()
-                input_ = (yield item)
-        return wrapper
-
-    def wrap_function(self, func):
-        """ Wrap a function to profile it.
-        """
-        @functools.wraps(func)
-        def wrapper(*args, **kwds):
-            self.enable_by_count()
-            try:
-                result = func(*args, **kwds)
-            finally:
-                self.disable_by_count()
-            return result
-        return wrapper
-
-    def dump_stats(self, filename):
-        stats = self.get_stats()
-
-        with open(filename, "w"):
-            json.dumps(stats)
+    def visualize():
+        here = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(here, "output.json")
+        LockProfiler.dump_stats(filename)
+        uri = pathlib.Path(filename).as_uri()
+        html_path = os.path.join(here, "vis", "vis.html")
+        os.system(html_path)
 
     def generate_html(self, filename):
         @dataclass
