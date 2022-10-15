@@ -12,10 +12,12 @@ from dataclasses import dataclass
 import json
 from collections import defaultdict
 import pathlib
+import atexit
+
 
 try:
     from ._lock_profiler import LockProfiler as CLockProfiler
-    from ._lock_profiler import LockTime
+    from ._lock_profiler import LockTime, LockStats, StackFrame
 except ImportError as ex:
     raise ImportError(
         'The lock_profiler._lock_profiler c-extension is not importable. '
@@ -26,12 +28,93 @@ __version__ = '4.0.0'
 
 
 class LockProfiler(CLockProfiler):
+    # Stats file defaults to file in same directory as script with `.pclprof` appended
+    _stats_filename = os.environ.get("PC_LINE_PROFILER_STATS_FILENAME", pathlib.Path(sys.argv[0]).name)
+
+    @staticmethod
+    def _dump_stats_for_pycharm():
+        """Dumps profile stats that can be read by the PyCharm Line Profiler plugin
+
+        The stats are written to a json file, with extension .pclprof
+        This extension is recognized by the PyCharm Line Profiler plugin
+        """
+        stats: LockStats = LockProfiler.get_stats()
+
+        # Convert stats into the line-profiler format
+        # Basically, count each lock acquisition as a line hit
+        # Propagate the acquisition time up the stack se we can see where the lock was required from
+
+        lock_strs = stats.lock_hashes
+        stacks = stats.stack_hashes
+        events = stats.lock_list
+
+        class T_KEY(typing.NamedTuple):
+            file: str
+            lineNo: int
+            functionName: str
+
+        @dataclass
+        class T_ELE:
+            lineNo: int
+            hits: int
+            time: int
+
+        class T_LINE(typing.NamedTuple):
+            file: str
+            lineNo: int
+
+        timings: typing.Dict[T_KEY, typing.List[T_ELE]] = defaultdict(lambda: [])
+        all_lines: typing.Dict[T_LINE, T_ELE] = {}
+
+
+        # NOTE: We don't have (or need) function names / starting line, so all lines will be listed under a single
+        #  dummy function starting at line 1 of each file. Eventually, will need to modify/fork the PyCharm plugin
+        #  to accept the stats as returned by LockProfiler instead of converting to LineProfiler format
+
+        for e in events:
+            if e.duration < 0:
+                # Don't care about releases for this visualization
+                continue
+
+            stack = [StackFrame(*f) for f in stacks[e.stack_hash]]
+            for frame in stack:
+                if not frame.file.endswith(".py") or any(frame.file.endswith(f) for f in ("Lockable.py", "threading.py")):
+                    continue
+
+                line = T_LINE(frame.file, frame.lineNo)
+                if line not in all_lines:
+                    ele = T_ELE(frame.lineNo, 0, 0)
+                    all_lines[line] = ele
+                    timings[T_KEY(frame.file, 1, "Dummy")].append(ele)
+
+                all_lines[line].hits += 1
+                all_lines[line].time += e.duration
+
+        stats_dict = {
+            "profiledFunctions": [{
+                "file": key.file,
+                "lineNo": key.lineNo,
+                "functionName": key.functionName,
+                "profiledLines": [{
+                    "lineNo": element.lineNo,
+                    "hits": element.hits,
+                    "time": element.time
+                } for element in value]
+            } for key, value in timings.items()],
+            "unit": 1 / 1000000000
+        }
+
+        with open(f"{LockProfiler._stats_filename}.pclprof", 'w') as fp:
+            json.dump(stats_dict, fp, indent=2)
+
+    atexit.register(_dump_stats_for_pycharm.__func__)
+
     @staticmethod
     def dump_stats(filename):
         stats = LockProfiler.get_stats()
 
         with open(filename, "w") as f:
-            f.write(json.dumps(stats.__dict__))
+            json.dump(stats.__dict__, f, indent=2)
 
     @staticmethod
     def visualize():
@@ -267,8 +350,8 @@ class LockProfiler(CLockProfiler):
 
         styles.extend(
             Style({
-                    "opacity": "100%"
-                }, f".{lock_class(lock_hash)}:hover .{lock_class(lock_hash)}")
+                "opacity": "100%"
+            }, f".{lock_class(lock_hash)}:hover .{lock_class(lock_hash)}")
             for lock_hash in lock_strs
         )
 

@@ -130,7 +130,12 @@ cdef struct LockInfo:
 #     char* funcname
 #     int lineno
 
-# StackType = typing.Tuple[typing.Tuple[str, str, int], ...]
+class StackFrame(typing.NamedTuple):
+    file: str
+    functionName: str
+    lineNo: int
+
+# StackType = typing.List[StackFrame]
 # cdef struct StackInfo:
 #     str stack
 
@@ -138,7 +143,7 @@ cdef struct LockInfo:
 @dataclass
 class LockStats:
     lock_hashes: typing.Dict[int, str]
-    stack_hashes: typing.Dict[int, typing.Any]
+    stack_hashes: typing.Dict[int, typing.List[StackFrame]]
     lock_list: typing.List[LockTime]
 
 
@@ -241,6 +246,65 @@ import sys
 #
 #     return s, stack_hash
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef int acquire_start(PyFrameObject *py_frame):
+    tid = threading.get_ident()
+
+    # lock acquire called
+    # f = sys._getframe()
+    f = <object>py_frame
+    skip = 0
+    while skip and f:
+        skip -= 1
+        f = f.f_back
+
+    stack = []
+    stack_hash = 0
+    while f is not None:
+        # if not filename.endswith("Lockable.py"):
+        frame = (
+            f.f_code.co_filename,
+            f.f_code.co_name,
+            f.f_lineno
+        )
+        stack.append(frame)
+        # stack_hash ^= hash(frame)
+        f = f.f_back
+    # stack = tuple(stack)
+
+    # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
+
+    # stack_hash = 1
+    stack_hash = hash(tuple(stack))
+    if stack_hash not in _stack_map:
+        # if not _c_stack_map.count(stack_hash):
+        _stack_map[stack_hash] = stack
+
+    # return s, stack_hash
+
+
+    # stack, stack_hash = get_stack()
+    # stack_hash = 1
+
+    _c_lock_map[tid].stack_hash = stack_hash
+    _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef int acquire_end(lock_):
+    tid = threading.get_ident()
+    # acquire returned
+    duration = hpTimer() - _c_lock_map[tid].timestamp
+    _c_lock_list.push_back(CLockTime(
+        _c_lock_map[tid].timestamp,
+        tid,
+        hash(lock_),
+        _c_lock_map[tid].stack_hash,
+        duration
+    ))
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -263,58 +327,60 @@ cdef int python_trace_callback(object lock_, PyFrameObject *py_frame, int what, 
 
 
     # print(f"{threading.get_ident()} {lut[what]}")
-    tid = threading.get_ident()
+    # tid = threading.get_ident()
 
     if what == PyTrace_C_CALL:
-        # lock acquire called
-        # f = sys._getframe()
-        f = <object>py_frame
-        skip = 2
-        while skip and f:
-            skip -= 1
-            f = f.f_back
-
-        stack = []
-        stack_hash = 0
-        while f is not None:
-            # if not filename.endswith("Lockable.py"):
-            frame = (
-                f.f_code.co_filename,
-                f.f_code.co_name,
-                f.f_lineno
-            )
-            stack.append(frame)
-            # stack_hash ^= hash(frame)
-            f = f.f_back
-        # stack = tuple(stack)
-
-        # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
-
-        # stack_hash = 1
-        stack_hash = hash(tuple(stack))
-        if stack_hash not in _stack_map:
-        # if not _c_stack_map.count(stack_hash):
-            _stack_map[stack_hash] = stack
-
-        # return s, stack_hash
-
-
-        # stack, stack_hash = get_stack()
-        # stack_hash = 1
-
-        _c_lock_map[tid].stack_hash = stack_hash
-        _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
+        acquire_start(py_frame)
+        # # lock acquire called
+        # # f = sys._getframe()
+        # f = <object>py_frame
+        # skip = 0
+        # while skip and f:
+        #     skip -= 1
+        #     f = f.f_back
+        #
+        # stack = []
+        # stack_hash = 0
+        # while f is not None:
+        #     # if not filename.endswith("Lockable.py"):
+        #     frame = (
+        #         f.f_code.co_filename,
+        #         f.f_code.co_name,
+        #         f.f_lineno
+        #     )
+        #     stack.append(frame)
+        #     # stack_hash ^= hash(frame)
+        #     f = f.f_back
+        # # stack = tuple(stack)
+        #
+        # # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
+        #
+        # # stack_hash = 1
+        # stack_hash = hash(tuple(stack))
+        # if stack_hash not in _stack_map:
+        # # if not _c_stack_map.count(stack_hash):
+        #     _stack_map[stack_hash] = stack
+        #
+        # # return s, stack_hash
+        #
+        #
+        # # stack, stack_hash = get_stack()
+        # # stack_hash = 1
+        #
+        # _c_lock_map[tid].stack_hash = stack_hash
+        # _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
 
     elif what == PyTrace_C_RETURN:
-        # acquire returned
-        duration = hpTimer() - _c_lock_map[tid].timestamp
-        _c_lock_list.push_back(CLockTime(
-            _c_lock_map[tid].timestamp,
-            tid,
-            hash(lock_),
-            _c_lock_map[tid].stack_hash,
-            duration
-        ))
+        acquire_end(lock_)
+        # # acquire returned
+        # duration = hpTimer() - _c_lock_map[tid].timestamp
+        # _c_lock_list.push_back(CLockTime(
+        #     _c_lock_map[tid].timestamp,
+        #     tid,
+        #     hash(lock_),
+        #     _c_lock_map[tid].stack_hash,
+        #     duration
+        # ))
 
     else:
         print("ERR")
