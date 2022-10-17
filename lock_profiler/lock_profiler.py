@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import dataclasses
 import pickle
 import functools
 import inspect
@@ -17,7 +18,7 @@ import atexit
 
 try:
     from ._lock_profiler import LockProfiler as CLockProfiler
-    from ._lock_profiler import LockTime, LockStats, StackFrame
+    from ._lock_profiler import LockTime, LockInfo, StackFrame
 except ImportError as ex:
     raise ImportError(
         'The lock_profiler._lock_profiler c-extension is not importable. '
@@ -38,74 +39,135 @@ class LockProfiler(CLockProfiler):
         The stats are written to a json file, with extension .pclprof
         This extension is recognized by the PyCharm Line Profiler plugin
         """
-        stats: LockStats = LockProfiler.get_stats()
+        stats: LockInfo = LockProfiler.get_stats()
 
-        # Convert stats into the line-profiler format
-        # Basically, count each lock acquisition as a line hit
-        # Propagate the acquisition time up the stack se we can see where the lock was required from
+        @dataclass
+        class LockStats:
+            # hits includes recursive re-acquisition of the same lock, while `acquires` does not
+            hits: int = 0
+            acquires: int = 0
+            # total time spent waiting for the lock, including time for re-acquisitions (based on hits)
+            total_acquire_time: int = 0
+            # average time spent waiting for the lock, excluding re-acquisitions since they take almost no time and would drag down the average (based on acquires)
+            avg_acquire_time: int = 0
+            max_acquire_time: int = 0
+            # hold time is the time between first seen acquire and the matching release
+            # Therefore, all these times are implicitly based on `acquires`
+            total_hold_time: int = 0
+            avg_hold_time: int = 0
+            max_hold_time: int = 0
+            # current acquisition depth
+            _depth: int = 0
+
+        class T_LINE_LOCK(typing.NamedTuple):
+            file: str
+            line_no: int
+            lock_hash: int
+
+        held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockTime]]] = defaultdict(lambda: defaultdict(lambda: []))
+        lock_stats: typing.DefaultDict[int, LockStats] = defaultdict(lambda: LockStats())
+        file_stats: typing.DefaultDict[str, typing.DefaultDict[int, typing.DefaultDict[int, LockStats]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: LockStats())))
+        all_stats: typing.List[LockStats] = []
+        # lock_depths: typing.Dict[int, int] = defaultdict(lambda: 0)
+        # line_depths: typing.Dict[T_LINE_LOCK, int] = defaultdict(lambda: 0)
 
         lock_strs = stats.lock_hashes
         stacks = stats.stack_hashes
         events = stats.lock_list
 
-        class T_KEY(typing.NamedTuple):
-            file: str
-            lineNo: int
-            functionName: str
-
-        @dataclass
-        class T_ELE:
-            lineNo: int
-            hits: int
-            time: int
-
-        class T_LINE(typing.NamedTuple):
-            file: str
-            lineNo: int
-
-        timings: typing.Dict[T_KEY, typing.List[T_ELE]] = defaultdict(lambda: [])
-        all_lines: typing.Dict[T_LINE, T_ELE] = {}
-
-
-        # NOTE: We don't have (or need) function names / starting line, so all lines will be listed under a single
-        #  dummy function starting at line 1 of each file. Eventually, will need to modify/fork the PyCharm plugin
-        #  to accept the stats as returned by LockProfiler instead of converting to LineProfiler format
-
         for e in events:
-            if e.duration < 0:
-                # Don't care about releases for this visualization
-                continue
+            lock_stat = lock_stats[e.lock_hash]
 
-            stack = [StackFrame(*f) for f in stacks[e.stack_hash]]
-            for frame in stack:
-                if not frame.file.endswith(".py") or any(frame.file.endswith(f) for f in ("Lockable.py", "threading.py")):
-                    continue
+            if e.duration >= 0:
+                if not lock_stat.hits:
+                    all_stats.append(lock_stat)
+                lock_stat.hits += 1
 
-                line = T_LINE(frame.file, frame.lineNo)
-                if line not in all_lines:
-                    ele = T_ELE(frame.lineNo, 0, 0)
-                    all_lines[line] = ele
-                    timings[T_KEY(frame.file, 1, "Dummy")].append(ele)
+                if not lock_stat._depth:
+                    lock_stat.acquires += 1
+                lock_stat._depth += 1
 
-                all_lines[line].hits += 1
-                all_lines[line].time += e.duration
+                lock_stat.total_acquire_time += e.duration
+                lock_stat.max_acquire_time = max(lock_stat.max_acquire_time, e.duration)
+                held[e.tid][e.lock_hash].append(e)
 
-        stats_dict = {
-            "profiledFunctions": [{
-                "file": key.file,
-                "lineNo": key.lineNo,
-                "functionName": key.functionName,
-                "profiledLines": [{
-                    "lineNo": element.lineNo,
-                    "hits": element.hits,
-                    "time": element.time
-                } for element in value]
-            } for key, value in timings.items()],
-            "unit": 1 / 1000000000
+                stack = [StackFrame(*f) for f in stacks[e.stack_hash]]
+                for frame in stack:
+                    if not frame.file.endswith(".py") or any(frame.file.endswith(f) for f in ("Lockable.py", "threading.py")):
+                        continue
+
+                    stat = file_stats[frame.file][frame.lineNo][e.lock_hash]
+                    if not stat.hits:
+                        all_stats.append(stat)
+                    stat.hits += 1
+                    if not stat._depth:
+                        stat.acquires += 1
+                    # TODO: not confident that depth will return to zero when it's supposed to...
+                    stat._depth += 1
+
+                    stat.total_acquire_time += e.duration
+                    stat.max_acquire_time = max(stat.max_acquire_time, e.duration)
+            else:
+                # Held relies on the position of the matching acquire event
+                assert e.lock_hash in held[e.tid] and len(held[e.tid][e.lock_hash]), "No acquire event found for release event!"
+                acquire = held[e.tid][e.lock_hash].pop()
+                lock_stat._depth -= 1
+
+                # Start at the end of the acquire
+                start = acquire.timestamp + acquire.duration
+                hold_duration = e.timestamp - start
+
+                # Note the lock may have been recursively acquired. Only compute the hold duration if it's released now
+                # if not len(held[e.tid][e.lock_hash]):
+                if not lock_stat._depth:
+                    lock_stat.total_hold_time += hold_duration
+                    lock_stat.max_hold_time = max(lock_stat.max_hold_time, hold_duration)
+
+                stack = [StackFrame(*f) for f in stacks[acquire.stack_hash]]
+                for frame in stack:
+                    if not frame.file.endswith(".py") or any(frame.file.endswith(f) for f in ("Lockable.py", "threading.py")):
+                        continue
+
+                    stat = file_stats[frame.file][frame.lineNo][acquire.lock_hash]
+                    stat._depth -= 1
+                    if not stat._depth:
+                        stat.total_hold_time += hold_duration
+                        stat.max_hold_time = max(stat.max_hold_time, hold_duration)
+
+        # TODO All depths should be at 0 during normal script execution. Verify this here
+        #  Note that if the profiling was turned on/off partway through the script, they may not return to 0
+
+        for lock_stat in all_stats:
+            lock_stat.avg_acquire_time = lock_stat.total_acquire_time // lock_stat.acquires
+            lock_stat.avg_hold_time = lock_stat.total_hold_time // lock_stat.acquires
+
+        # for lock_stat in lock_stats.values():
+        #     lock_stat.avg_acquire_time = lock_stat.total_acquire_time // lock_stat.hits
+        #     lock_stat.avg_hold_time = lock_stat.total_hold_time // lock_stat.hits
+        #
+        # for file_stat in file_stats.values():
+        #     for line_stat in file_stat.values():
+        #         for lock_stat in line_stat.values():
+        #             lock_stat.avg_acquire_time = lock_stat.total_acquire_time // lock_stat.hits
+        #             lock_stat.avg_hold_time = lock_stat.total_hold_time // lock_stat.hits
+
+        # Sort by total acquire time
+        lock_stats = dict(reversed(sorted(lock_stats.items(), key=lambda i: i[1].total_acquire_time)))
+
+        output = {
+            "lock_stats": lock_stats,
+            "lock_hashes": lock_strs,
+            "file_stats": file_stats,
         }
 
+        class Encoder(json.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, LockStats):  # dataclasses.is_dataclass(o):
+                    return dataclasses.astuple(o)[:-1]
+                return super().default(o)
+
         with open(f"{LockProfiler._stats_filename}.pclprof", 'w') as fp:
-            json.dump(stats_dict, fp, indent=2)
+            json.dump(output, fp, indent=2, cls=Encoder)
 
     atexit.register(_dump_stats_for_pycharm.__func__)
 

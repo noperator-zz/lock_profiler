@@ -107,14 +107,14 @@ cdef struct CLockTime:
     PY_LONG_LONG duration
 
 class LockTime(typing.NamedTuple):
-    timestamp: float
+    timestamp: int
     tid: int
     lock_hash: int
     stack_hash: int
-    duration: float
+    duration: int
 
 # Keeps track of one lock acquisition
-cdef struct LockInfo:
+cdef struct AcquireInfo:
     # Set when acquire is called
     PY_LONG_LONG timestamp
     # Hash of the call stack
@@ -141,14 +141,14 @@ class StackFrame(typing.NamedTuple):
 
 # Note: this is a regular Python class to allow easy pickling.
 @dataclass
-class LockStats:
+class LockInfo:
     lock_hashes: typing.Dict[int, str]
     stack_hashes: typing.Dict[int, typing.List[StackFrame]]
     lock_list: typing.List[LockTime]
 
 
 # Mapping between thread-id and LockInfo
-cdef unordered_map[int64, LockInfo] _c_lock_map
+cdef unordered_map[int64, AcquireInfo] _c_lock_map
 # List of all acquire events
 cdef vector[CLockTime] _c_lock_list
 
@@ -162,20 +162,72 @@ cdef class LockProfiler:
         raise NotImplementedError()
 
     @staticmethod
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def enable(obj):
         h = hash(obj._lock)
         if h not in _lock_strs:
             _lock_strs[h] = str(obj)
-        # TODO maybe compute stack here. This way the callback is as short as possible. But we don't have py_frame here
 
-        # _c_lock_map[threading.get_ident()]
-        PyEval_SetProfile(python_trace_callback, obj._lock)
-        # trace_callback(obj._lock, PyTrace_C_CALL)
+        # TODO maybe compute stack here. This way the callback is as short as possible. But we don't have py_frame here
+        tid = threading.get_ident()
+
+        # lock acquire called
+        f = sys._getframe()
+        # f = <object>py_frame
+        skip = 0
+        while skip and f:
+            skip -= 1
+            f = f.f_back
+
+        stack = []
+        stack_hash = 0
+        while f is not None:
+            # if not filename.endswith("Lockable.py"):
+            frame = (
+                f.f_code.co_filename,
+                f.f_code.co_name,
+                f.f_lineno
+            )
+            stack.append(frame)
+            # stack_hash ^= hash(frame)
+            f = f.f_back
+        # stack = tuple(stack)
+
+        # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
+
+        # stack_hash = 1
+        stack_hash = hash(tuple(stack))
+        if stack_hash not in _stack_map:
+            # if not _c_stack_map.count(stack_hash):
+            _stack_map[stack_hash] = stack
+
+        # return s, stack_hash
+
+
+        # stack, stack_hash = get_stack()
+        # stack_hash = 1
+
+        _c_lock_map[tid].stack_hash = stack_hash
+        _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
+
 
     @staticmethod
-    def disable():
-        # trace_callback(obj._lock, PyTrace_C_RETURN)
-        unset_trace()
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    def disable(obj):
+        t = hpTimer()
+        tid = threading.get_ident()
+        # acquire returned
+        duration = t - _c_lock_map[tid].timestamp
+        _c_lock_list.push_back(CLockTime(
+            _c_lock_map[tid].timestamp,
+            tid,
+            hash(obj._lock),
+            _c_lock_map[tid].stack_hash,
+            duration
+        ))
+
 
     @staticmethod
     def notify_release(obj):
@@ -191,7 +243,7 @@ cdef class LockProfiler:
         ))
 
     @staticmethod
-    def get_stats() -> LockStats:
+    def get_stats() -> LockInfo:
         """ Return a LineStats object containing the timings.
         """
         cdef dict cmap
@@ -201,7 +253,7 @@ cdef class LockProfiler:
         # for t in lock_list:
         #     t.timestamp -= offset
 
-        output = LockStats(
+        output = LockInfo(
             _lock_strs,
             # # Remove frames in Lockable.py
             # {k:
@@ -246,143 +298,3 @@ import sys
 #
 #     return s, stack_hash
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef int acquire_start(PyFrameObject *py_frame):
-    tid = threading.get_ident()
-
-    # lock acquire called
-    # f = sys._getframe()
-    f = <object>py_frame
-    skip = 0
-    while skip and f:
-        skip -= 1
-        f = f.f_back
-
-    stack = []
-    stack_hash = 0
-    while f is not None:
-        # if not filename.endswith("Lockable.py"):
-        frame = (
-            f.f_code.co_filename,
-            f.f_code.co_name,
-            f.f_lineno
-        )
-        stack.append(frame)
-        # stack_hash ^= hash(frame)
-        f = f.f_back
-    # stack = tuple(stack)
-
-    # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
-
-    # stack_hash = 1
-    stack_hash = hash(tuple(stack))
-    if stack_hash not in _stack_map:
-        # if not _c_stack_map.count(stack_hash):
-        _stack_map[stack_hash] = stack
-
-    # return s, stack_hash
-
-
-    # stack, stack_hash = get_stack()
-    # stack_hash = 1
-
-    _c_lock_map[tid].stack_hash = stack_hash
-    _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef int acquire_end(lock_):
-    tid = threading.get_ident()
-    # acquire returned
-    duration = hpTimer() - _c_lock_map[tid].timestamp
-    _c_lock_list.push_back(CLockTime(
-        _c_lock_map[tid].timestamp,
-        tid,
-        hash(lock_),
-        _c_lock_map[tid].stack_hash,
-        duration
-    ))
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef int python_trace_callback(object lock_, PyFrameObject *py_frame, int what, PyObject *arg):
-# cdef int trace_callback(object lock_, int what):
-    """ The PyEval_SetTrace() callback.
-    """
-    cdef PY_LONG_LONG time
-    cdef PY_LONG_LONG duration
-    cdef int64 stack_hash
-    cdef int64 tid
-    # cdef vector[(PyObject *, PyObject *, int)] stack
-
-    # In Lockable.py, Profiling is enable just before calling `RLock.acquire`, and disabled right after.
-    #  Therefore, this callback should only receive two events:
-    #   A PyTrace_C_CALL when the acquisition starts
-    #   A PyTrace_C_RETURN when the acquisition completes
-    #  The time between these is how long the lock was blocked for
-    # In addition, we can use the thread ident and the call stack to determine the exact callee
-
-
-    # print(f"{threading.get_ident()} {lut[what]}")
-    # tid = threading.get_ident()
-
-    if what == PyTrace_C_CALL:
-        acquire_start(py_frame)
-        # # lock acquire called
-        # # f = sys._getframe()
-        # f = <object>py_frame
-        # skip = 0
-        # while skip and f:
-        #     skip -= 1
-        #     f = f.f_back
-        #
-        # stack = []
-        # stack_hash = 0
-        # while f is not None:
-        #     # if not filename.endswith("Lockable.py"):
-        #     frame = (
-        #         f.f_code.co_filename,
-        #         f.f_code.co_name,
-        #         f.f_lineno
-        #     )
-        #     stack.append(frame)
-        #     # stack_hash ^= hash(frame)
-        #     f = f.f_back
-        # # stack = tuple(stack)
-        #
-        # # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
-        #
-        # # stack_hash = 1
-        # stack_hash = hash(tuple(stack))
-        # if stack_hash not in _stack_map:
-        # # if not _c_stack_map.count(stack_hash):
-        #     _stack_map[stack_hash] = stack
-        #
-        # # return s, stack_hash
-        #
-        #
-        # # stack, stack_hash = get_stack()
-        # # stack_hash = 1
-        #
-        # _c_lock_map[tid].stack_hash = stack_hash
-        # _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
-
-    elif what == PyTrace_C_RETURN:
-        acquire_end(lock_)
-        # # acquire returned
-        # duration = hpTimer() - _c_lock_map[tid].timestamp
-        # _c_lock_list.push_back(CLockTime(
-        #     _c_lock_map[tid].timestamp,
-        #     tid,
-        #     hash(lock_),
-        #     _c_lock_map[tid].stack_hash,
-        #     duration
-        # ))
-
-    else:
-        print("ERR")
-
-    return 0
