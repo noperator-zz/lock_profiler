@@ -18,7 +18,7 @@ import atexit
 
 try:
     from ._lock_profiler import LockProfiler as CLockProfiler
-    from ._lock_profiler import LockTime, LockInfo, StackFrame
+    from ._lock_profiler import LockEvent, LockStats, StackFrame, PY_E_WAIT, PY_E_ACQUIRE, PY_E_RELEASE
 except ImportError as ex:
     raise ImportError(
         'The lock_profiler._lock_profiler c-extension is not importable. '
@@ -39,10 +39,10 @@ class LockProfiler(CLockProfiler):
         The stats are written to a json file, with extension .pclprof
         This extension is recognized by the PyCharm Line Profiler plugin
         """
-        stats: LockInfo = LockProfiler.get_stats()
+        stats: LockStats = LockProfiler.get_stats()
 
         @dataclass
-        class LockStats:
+        class Stat:
             # hits includes recursive re-acquisition of the same lock, while `acquires` does not
             hits: int = 0
             acquires: int = 0
@@ -64,10 +64,11 @@ class LockProfiler(CLockProfiler):
             line_no: int
             lock_hash: int
 
-        held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockTime]]] = defaultdict(lambda: defaultdict(lambda: []))
-        lock_stats: typing.DefaultDict[int, LockStats] = defaultdict(lambda: LockStats())
-        file_stats: typing.DefaultDict[str, typing.DefaultDict[int, typing.DefaultDict[int, LockStats]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: LockStats())))
-        all_stats: typing.List[LockStats] = []
+        held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockEvent]]] = defaultdict(lambda: defaultdict(lambda: []))
+        lock_stats: typing.DefaultDict[int, Stat] = defaultdict(lambda: Stat())
+        file_stats: typing.DefaultDict[str, typing.DefaultDict[int, typing.DefaultDict[int, Stat]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: Stat())))
+        all_stats: typing.List[Stat] = []
+        current_wait: typing.Dict[int, LockEvent] = {}
         # lock_depths: typing.Dict[int, int] = defaultdict(lambda: 0)
         # line_depths: typing.Dict[T_LINE_LOCK, int] = defaultdict(lambda: 0)
 
@@ -76,9 +77,16 @@ class LockProfiler(CLockProfiler):
         events = stats.lock_list
 
         for e in events:
-            lock_stat = lock_stats[e.lock_hash]
 
-            if e.duration >= 0:
+            if e.flag == PY_E_WAIT:
+                # TODO potentially calculate blocking times here
+                current_wait[e.tid] = e
+
+            elif e.flag == PY_E_ACQUIRE:
+                lock_stat = lock_stats[e.lock_hash]
+                stack_hash = current_wait[e.tid].stack_hash
+                wait_duration = e.timestamp - current_wait[e.tid].timestamp
+
                 if not lock_stat.hits:
                     all_stats.append(lock_stat)
                 lock_stat.hits += 1
@@ -87,11 +95,16 @@ class LockProfiler(CLockProfiler):
                     lock_stat.acquires += 1
                 lock_stat._depth += 1
 
-                lock_stat.total_acquire_time += e.duration
-                lock_stat.max_acquire_time = max(lock_stat.max_acquire_time, e.duration)
-                held[e.tid][e.lock_hash].append(e)
+                lock_stat.total_acquire_time += wait_duration
+                lock_stat.max_acquire_time = max(lock_stat.max_acquire_time, wait_duration)
+                c = list(e)
+                # FIXME this is a hack to overwrite the stack_hash
+                c[-1] = stack_hash
+                held[e.tid][e.lock_hash].append(LockEvent(
+                    *c
+                ))
 
-                stack = [StackFrame(*f) for f in stacks[e.stack_hash]]
+                stack = [StackFrame(*f) for f in stacks[stack_hash]]
                 for frame in stack:
                     if not frame.file.endswith(".py") or any(frame.file.endswith(f) for f in ("Lockable.py", "threading.py")):
                         continue
@@ -105,17 +118,17 @@ class LockProfiler(CLockProfiler):
                     # TODO: not confident that depth will return to zero when it's supposed to...
                     stat._depth += 1
 
-                    stat.total_acquire_time += e.duration
-                    stat.max_acquire_time = max(stat.max_acquire_time, e.duration)
-            else:
+                    stat.total_acquire_time += wait_duration
+                    stat.max_acquire_time = max(stat.max_acquire_time, wait_duration)
+
+            elif e.flag == PY_E_RELEASE:
+                lock_stat = lock_stats[e.lock_hash]
                 # Held relies on the position of the matching acquire event
                 assert e.lock_hash in held[e.tid] and len(held[e.tid][e.lock_hash]), "No acquire event found for release event!"
                 acquire = held[e.tid][e.lock_hash].pop()
                 lock_stat._depth -= 1
 
-                # Start at the end of the acquire
-                start = acquire.timestamp + acquire.duration
-                hold_duration = e.timestamp - start
+                hold_duration = e.timestamp - acquire.timestamp
 
                 # Note the lock may have been recursively acquired. Only compute the hold duration if it's released now
                 # if not len(held[e.tid][e.lock_hash]):
@@ -162,7 +175,7 @@ class LockProfiler(CLockProfiler):
 
         class Encoder(json.JSONEncoder):
             def default(self, o):
-                if isinstance(o, LockStats):  # dataclasses.is_dataclass(o):
+                if isinstance(o, Stat):  # dataclasses.is_dataclass(o):
                     return dataclasses.astuple(o)[:-1]
                 return super().default(o)
 
@@ -325,7 +338,7 @@ class LockProfiler(CLockProfiler):
 
         # Scratchpad to hold acquire events while waiting for a release event
         # {tid: {lock_hash: [first acquire, next acquire, ...]}}
-        held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockTime]]] = defaultdict(lambda: defaultdict(lambda: []))
+        held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockEvent]]] = defaultdict(lambda: defaultdict(lambda: []))
         # divs: typing.List[Div] = []
 
         # TODO can we remove this loop? Timestamp of the first event may not be the earliest

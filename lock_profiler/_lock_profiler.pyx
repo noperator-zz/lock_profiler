@@ -11,6 +11,8 @@ import threading
 import typing
 from dataclasses import dataclass
 
+import sys
+
 # long long int is at least 64 bytes assuming c99
 ctypedef unsigned long long int uint64
 ctypedef long long int int64
@@ -94,41 +96,28 @@ cdef extern from "unset_trace.c":
     void unset_trace()
 
 
-cdef struct CLockTime:
-    # When acquire was called
+
+cdef struct CLockEvent:
     PY_LONG_LONG timestamp
+    int64_t flag
     # Which thread called it
     int64_t tid
     # Which lock it was called on
     int64 lock_hash
     # Hash of the call stack
     int64_t stack_hash
-    # How long acquire took
-    PY_LONG_LONG duration
 
-class LockTime(typing.NamedTuple):
+class LockEvent(typing.NamedTuple):
     timestamp: int
+    flag: int
+    # idx: int
+    # current_depth: int
+    # wait_duration: int
+    # hold_duration: int
+    # # block_duration: int
     tid: int
     lock_hash: int
     stack_hash: int
-    duration: int
-
-# Keeps track of one lock acquisition
-cdef struct AcquireInfo:
-    # Set when acquire is called
-    PY_LONG_LONG timestamp
-    # Hash of the call stack
-    int64_t stack_hash
-
-# @dataclass
-# class StackFrame:
-#     filename: str
-#     funcname: str
-#     lineno: int
-# cdef struct StackFrame:
-#     char* filename
-#     char* funcname
-#     int lineno
 
 class StackFrame(typing.NamedTuple):
     file: str
@@ -141,16 +130,31 @@ class StackFrame(typing.NamedTuple):
 
 # Note: this is a regular Python class to allow easy pickling.
 @dataclass
-class LockInfo:
+class LockStats:
     lock_hashes: typing.Dict[int, str]
     stack_hashes: typing.Dict[int, typing.List[StackFrame]]
-    lock_list: typing.List[LockTime]
+    lock_list: typing.List[LockEvent]
 
 
-# Mapping between thread-id and LockInfo
-cdef unordered_map[int64, AcquireInfo] _c_lock_map
+# # Mapping between tid and (mapping between lock hash and (vector of info about each nested acquisition))
+# cdef unordered_map[int64, unordered_map[int64_t, vector[CLockInfo]]] _c_lock_map
 # List of all acquire events
-cdef vector[CLockTime] _c_lock_list
+cdef vector[CLockEvent] _c_lock_list
+# Mapping between lock hash and which thread is holding it
+# cdef unordered_map[int64, int64_t] _c_held_map
+# Mapping between tid and the stack hash recorede in `pre_acquire`
+cdef unordered_map[int64, int64_t] _c_current_stack_map
+
+cdef int64_t _idx = 0
+
+cdef int64_t E_WAIT =    0
+cdef int64_t E_ACQUIRE = 1
+cdef int64_t E_RELEASE = 2
+PY_E_WAIT = E_WAIT
+PY_E_ACQUIRE = E_ACQUIRE
+PY_E_RELEASE = E_RELEASE
+# cdef int64_t F_BLOCKED = 1 << 8
+
 
 # Mapping between call stack hash and call stack
 # cdef unordered_map[int64, vector[StackFrame]] _c_stack_map
@@ -164,96 +168,150 @@ cdef class LockProfiler:
     @staticmethod
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    def enable(obj):
+    def pre_acquire(obj):
+        global _idx
         h = hash(obj._lock)
         if h not in _lock_strs:
             _lock_strs[h] = str(obj)
 
-        # TODO maybe compute stack here. This way the callback is as short as possible. But we don't have py_frame here
         tid = threading.get_ident()
 
         # lock acquire called
-        f = sys._getframe()
-        # f = <object>py_frame
-        skip = 0
-        while skip and f:
-            skip -= 1
-            f = f.f_back
+        if 1:
+            f = sys._getframe()
+            # f = <object>py_frame
+            skip = 0
+            while skip and f:
+                skip -= 1
+                f = f.f_back
 
-        stack = []
-        stack_hash = 0
-        while f is not None:
-            # if not filename.endswith("Lockable.py"):
-            frame = (
-                f.f_code.co_filename,
-                f.f_code.co_name,
-                f.f_lineno
-            )
-            stack.append(frame)
-            # stack_hash ^= hash(frame)
-            f = f.f_back
-        # stack = tuple(stack)
+            stack = []
+            stack_hash = 0
+            while f is not None:
+                # if not filename.endswith("Lockable.py"):
+                frame = (
+                    f.f_code.co_filename,
+                    f.f_code.co_name,
+                    f.f_lineno
+                )
+                stack.append(frame)
+                # stack_hash ^= hash(frame)
+                f = f.f_back
+            # stack = tuple(stack)
 
-        # s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
+            # stack = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
+            stack_hash = hash(tuple(stack))
+        else:
+            stack = ""
+            stack_hash = 1
 
-        # stack_hash = 1
-        stack_hash = hash(tuple(stack))
         if stack_hash not in _stack_map:
             # if not _c_stack_map.count(stack_hash):
             _stack_map[stack_hash] = stack
 
-        # return s, stack_hash
+        # _c_current_stack_map[tid] = stack_hash
+        _c_lock_list.push_back(CLockEvent(
+            hpTimer(), # TODO may want to do this last to ignore overhead from this functions
+            E_WAIT,
+            tid,
+            h,
+            stack_hash,
+        ))
 
-
-        # stack, stack_hash = get_stack()
-        # stack_hash = 1
-
-        _c_lock_map[tid].stack_hash = stack_hash
-        _c_lock_map[tid].timestamp = hpTimer() # TODO may want to do this last to ignore overhead from this functions
-
+        # blocked = 0
+        # if _c_held_map.count(h):
+        #     if _c_held_map[h] != tid:
+        #         # Another thread is holding this lock; we're blocked
+        #         # _c_wait_map[h] = tid
+        #         blocked = 1
+        # else:
+        #     _c_held_map[h] = tid
+        #
+        # size = _c_lock_map[tid][h].size()
+        # _c_lock_map[tid][h].push_back(CLockInfo(
+        #     hpTimer(), # TODO may want to do this last to ignore overhead from this functions
+        #     _idx,
+        #     size,
+        #     # # temporarily using `acquire_duration` as a flag to say if this thread is blocked or not
+        #     # blocked,
+        #     0,
+        #
+        #     0,
+        #     tid,
+        #     h,
+        #     stack_hash,
+        # ))
+        #
+        # _idx += 1
 
     @staticmethod
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    def disable(obj):
+    def post_acquire(obj):
         t = hpTimer()
+        h = hash(obj._lock)
         tid = threading.get_ident()
-        # acquire returned
-        duration = t - _c_lock_map[tid].timestamp
-        _c_lock_list.push_back(CLockTime(
-            _c_lock_map[tid].timestamp,
-            tid,
-            hash(obj._lock),
-            _c_lock_map[tid].stack_hash,
-            duration
-        ))
 
-
-    @staticmethod
-    def notify_release(obj):
-        # When duration is negative, this is a release
-        # stack, stack_hash = get_stack()
-
-        _c_lock_list.push_back(CLockTime(
+        _c_lock_list.push_back(CLockEvent(
             hpTimer(),
-            threading.get_ident(),
-            hash(obj._lock),
-            0,#stack_hash,
-            -1,
+            E_ACQUIRE,
+            tid,
+            h,
+            0,
         ))
 
+
+        # # info = _c_lock_map[tid][h].back()
+        # # was_blocked = _c_lock_map[tid][h].back().wait_duration
+        # _c_lock_map[tid][h].back().wait_duration = t - _c_lock_map[tid][h].back().timestamp
+        #
+        # # # TODO maybe record the wait duration even if it wasn't blocked (it will only show the Python overhead and any OS overhead in this case)
+        # # if was_blocked:
+        # #     info.wait_duration = wait_duration
+        #
+        # # if _c_held_map.count(h):
+        # #     assert _c_held_map[h].tid == tid
+        # # else:
+        # #     _c_held_map[h] = LockDepth(t, tid, 0)
+        # #
+        # # _c_held_map[h].depth += 1
+
+
     @staticmethod
-    def get_stats() -> LockInfo:
+    def pre_release(obj):
+        t = hpTimer()
+        h = hash(obj._lock)
+        tid = threading.get_ident()
+
+        _c_lock_list.push_back(CLockEvent(
+            hpTimer(),
+            E_RELEASE,
+            tid,
+            h,
+            0,
+        ))
+
+        # info = _c_lock_map[tid][h].back()
+        # _c_lock_map[tid][h].pop_back()
+        # hold_duration = t - (info.timestamp + info.wait_duration)
+        #
+        # info.hold_duration = hold_duration
+        # _c_lock_list.push_back(info)
+        #
+        # if not _c_lock_map[tid][h].size():
+        #     _c_lock_map[tid].erase(h)
+        #     assert _c_held_map[h] == tid
+        #     _c_held_map.erase(h)
+        #
+        #     # if _c_wait_map.count(h):
+        #     #     # Another thread is waiting for this lock; they're unblocked now
+
+    @staticmethod
+    def get_stats() -> LockStats:
         """ Return a LineStats object containing the timings.
         """
-        cdef dict cmap
 
-        # offset = _c_lock_list[0].timestamp if len(_c_lock_list) else 0
-        # lock_list = _c_lock_list[:]
-        # for t in lock_list:
-        #     t.timestamp -= offset
-
-        output = LockInfo(
+        output = LockStats(
             _lock_strs,
             # # Remove frames in Lockable.py
             # {k:
@@ -261,40 +319,17 @@ cdef class LockProfiler:
             #  for k, v in _stack_map.items()},
             # _c_stack_map,
             _stack_map,
-            [LockTime(
+            [LockEvent(
                 a.timestamp,
+                a.flag,
+                # a.idx,
+                # a.current_depth,
+                # a.wait_duration,
+                # a.hold_duration,
                 a.tid,
                 a.lock_hash,
                 a.stack_hash,
-                a.duration,
             ) for a in _c_lock_list],
             # tuple(CLockTime(t[0] - offset, *t[1:]) for t in _c_lock_list),
         )
         return output
-
-
-import sys
-# def get_stack(skip=2):
-#     # f = sys._getframe()
-#     #
-#     # while skip and f:
-#     #     skip -= 1
-#     #     f = f.f_back
-#     #
-#     # s = []
-#     # while f is not None:
-#     #     funcname = f.f_code.co_name
-#     #     filename = f.f_code.co_filename
-#     #     # if not filename.endswith("Lockable.py"):
-#     #     s.append((filename, funcname, f.f_lineno))
-#     #     f = f.f_back
-#     # s = tuple(s)
-#
-#     s = (('C:\\development\\python\\packages\\test_jig_util\\tests\\lock_profiler_test.py', '<module>', 25), ('C:\\Users\\Ivan\\AppData\\Roaming\\JetBrains\\IntelliJIdea2022.2\\plugins\\python\\helpers\\pydev\\_pydev_imps\\_pydev_execfile.py', 'execfile', 18), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '_exec', 1496), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'run', 1489), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', 'main', 2177), ('C:/Users/Ivan/AppData/Roaming/JetBrains/IntelliJIdea2022.2/plugins/python/helpers/pydev/pydevd.py', '<module>', 2195))
-#
-#     stack_hash = hash(s)
-#     if stack_hash not in _stack_map:
-#         _stack_map[stack_hash] = s
-#
-#     return s, stack_hash
-
