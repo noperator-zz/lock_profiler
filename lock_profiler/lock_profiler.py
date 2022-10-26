@@ -46,31 +46,45 @@ class LockProfiler(CLockProfiler):
             # hits includes recursive re-acquisition of the same lock, while `acquires` does not
             hits: int = 0
             acquires: int = 0
+            # Number of times it was blocked by another thread
+            blocks: int = 0
             # total time spent waiting for the lock, including time for re-acquisitions (based on hits)
-            total_acquire_time: int = 0
+            total_wait_time: int = 0
             # average time spent waiting for the lock, excluding re-acquisitions since they take almost no time and would drag down the average (based on acquires)
-            avg_acquire_time: int = 0
-            max_acquire_time: int = 0
+            avg_wait_time: int = 0
+            max_wait_time: int = 0
             # hold time is the time between first seen acquire and the matching release
             # Therefore, all these times are implicitly based on `acquires`
             total_hold_time: int = 0
             avg_hold_time: int = 0
             max_hold_time: int = 0
+
+            total_block_time: int = 0
+            avg_block_time: int = 0
+            max_block_time: int = 0
             # current acquisition depth
             _depth: int = 0
+            # Current holder
+            _tid: int = 0
 
         class T_LINE_LOCK(typing.NamedTuple):
             file: str
             line_no: int
             lock_hash: int
 
+        # {tid: {lock_hash: Event}}
         held: typing.DefaultDict[int, typing.DefaultDict[int, typing.List[LockEvent]]] = defaultdict(lambda: defaultdict(lambda: []))
         lock_stats: typing.DefaultDict[int, Stat] = defaultdict(lambda: Stat())
         file_stats: typing.DefaultDict[str, typing.DefaultDict[int, typing.DefaultDict[int, Stat]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: Stat())))
         all_stats: typing.List[Stat] = []
+        # {tid: event}
         current_wait: typing.Dict[int, LockEvent] = {}
+        # {lock_hash: {tid: event}}
+        current_blocked: typing.DefaultDict[int, typing.Dict[int, LockEvent]] = defaultdict(lambda: {})
         # lock_depths: typing.Dict[int, int] = defaultdict(lambda: 0)
         # line_depths: typing.Dict[T_LINE_LOCK, int] = defaultdict(lambda: 0)
+        # # {lock_hash: tid}
+        # all_held: typing.Dict[int, int] = {}
 
         lock_strs = stats.lock_hashes
         stacks = stats.stack_hashes
@@ -79,13 +93,31 @@ class LockProfiler(CLockProfiler):
         for e in events:
 
             if e.flag == PY_E_WAIT:
-                # TODO potentially calculate blocking times here
+                print(f"{e.tid} w")
+                # If the lock is already held by a different thread
+                if lock_stats[e.lock_hash]._depth > 0 and lock_stats[e.lock_hash]._tid != e.tid:
+                    current_blocked[e.lock_hash][e.tid] = e
+                    lock_stats[e.lock_hash].blocks += 1
+                    print(e.tid, "block")
+
                 current_wait[e.tid] = e
 
             elif e.flag == PY_E_ACQUIRE:
+                print(f"{e.tid} a")
                 lock_stat = lock_stats[e.lock_hash]
                 stack_hash = current_wait[e.tid].stack_hash
                 wait_duration = e.timestamp - current_wait[e.tid].timestamp
+
+                if e.tid in current_blocked[e.lock_hash]:
+                    block_duration = e.timestamp - current_blocked[e.lock_hash][e.tid].timestamp
+                    lock_stat.total_block_time += block_duration
+                    lock_stat.max_block_time = max(lock_stat.max_block_time, block_duration)
+                    del current_blocked[e.lock_hash][e.tid]
+
+                if current_wait[e.tid][1]:
+                    lock_stat.total_block_time += wait_duration
+
+                del current_wait[e.tid]
 
                 if not lock_stat.hits:
                     all_stats.append(lock_stat)
@@ -94,9 +126,10 @@ class LockProfiler(CLockProfiler):
                 if not lock_stat._depth:
                     lock_stat.acquires += 1
                 lock_stat._depth += 1
+                lock_stat._tid = e.tid
 
-                lock_stat.total_acquire_time += wait_duration
-                lock_stat.max_acquire_time = max(lock_stat.max_acquire_time, wait_duration)
+                lock_stat.total_wait_time += wait_duration
+                lock_stat.max_wait_time = max(lock_stat.max_wait_time, wait_duration)
                 c = list(e)
                 # FIXME this is a hack to overwrite the stack_hash
                 c[-1] = stack_hash
@@ -118,15 +151,23 @@ class LockProfiler(CLockProfiler):
                     # TODO: not confident that depth will return to zero when it's supposed to...
                     stat._depth += 1
 
-                    stat.total_acquire_time += wait_duration
-                    stat.max_acquire_time = max(stat.max_acquire_time, wait_duration)
+                    stat.total_wait_time += wait_duration
+                    stat.max_wait_time = max(stat.max_wait_time, wait_duration)
 
             elif e.flag == PY_E_RELEASE:
+                print(f"{e.tid} r")
                 lock_stat = lock_stats[e.lock_hash]
                 # Held relies on the position of the matching acquire event
                 assert e.lock_hash in held[e.tid] and len(held[e.tid][e.lock_hash]), "No acquire event found for release event!"
                 acquire = held[e.tid][e.lock_hash].pop()
                 lock_stat._depth -= 1
+                assert lock_stat._depth >= 0
+
+                # if e.lock_hash in current_blocked:
+                #     block_duration = e.timestamp - current_blocked[e.lock_hash].timestamp
+                #     lock_stat.total_block_time += block_duration
+                #     lock_stat.max_block_time = max(lock_stat.max_block_time, block_duration)
+                #     del current_blocked[e.lock_hash]
 
                 hold_duration = e.timestamp - acquire.timestamp
 
@@ -151,8 +192,9 @@ class LockProfiler(CLockProfiler):
         #  Note that if the profiling was turned on/off partway through the script, they may not return to 0
 
         for lock_stat in all_stats:
-            lock_stat.avg_acquire_time = lock_stat.total_acquire_time // lock_stat.acquires
-            lock_stat.avg_hold_time = lock_stat.total_hold_time // lock_stat.acquires
+            lock_stat.avg_wait_time = lock_stat.total_wait_time // max(1, lock_stat.acquires)
+            lock_stat.avg_hold_time = lock_stat.total_hold_time // max(1, lock_stat.acquires)
+            lock_stat.avg_block_time = lock_stat.total_block_time // max(1, lock_stat.blocks)
 
         # for lock_stat in lock_stats.values():
         #     lock_stat.avg_acquire_time = lock_stat.total_acquire_time // lock_stat.hits
@@ -165,7 +207,7 @@ class LockProfiler(CLockProfiler):
         #             lock_stat.avg_hold_time = lock_stat.total_hold_time // lock_stat.hits
 
         # Sort by total acquire time
-        lock_stats = dict(reversed(sorted(lock_stats.items(), key=lambda i: i[1].total_acquire_time)))
+        lock_stats = dict(reversed(sorted(lock_stats.items(), key=lambda i: i[1].total_wait_time)))
 
         output = {
             "lock_stats": lock_stats,
@@ -176,7 +218,7 @@ class LockProfiler(CLockProfiler):
         class Encoder(json.JSONEncoder):
             def default(self, o):
                 if isinstance(o, Stat):  # dataclasses.is_dataclass(o):
-                    return dataclasses.astuple(o)[:-1]
+                    return dataclasses.astuple(o)[:-2]
                 return super().default(o)
 
         with open(f"{LockProfiler._stats_filename}.pclprof", 'w') as fp:

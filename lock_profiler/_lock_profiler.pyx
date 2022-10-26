@@ -145,8 +145,6 @@ cdef vector[CLockEvent] _c_lock_list
 # Mapping between tid and the stack hash recorede in `pre_acquire`
 cdef unordered_map[int64, int64_t] _c_current_stack_map
 
-cdef int64_t _idx = 0
-
 cdef int64_t E_WAIT =    0
 cdef int64_t E_ACQUIRE = 1
 cdef int64_t E_RELEASE = 2
@@ -164,6 +162,13 @@ _lock_strs = {}
 cdef class LockProfiler:
     def __init__(self):
         raise NotImplementedError()
+
+    @staticmethod
+    def clear_trace():
+        _stack_map = {}
+        _lock_strs = {}
+        _c_lock_list.clear()
+        _c_current_stack_map.clear()
 
     @staticmethod
     @cython.boundscheck(False)
